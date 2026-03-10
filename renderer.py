@@ -527,18 +527,104 @@ function closeAllMenus() {
     });
 }
 
+function _parseCardDate(dateText) {
+    var text = (dateText || '').trim();
+    if (!text) return 0;
+    var parsed = Date.parse(text);
+    return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function _refreshFavouritesCardFromDom() {
+    var favCard = document.querySelector('.favourites-card');
+    if (!favCard) return;
+    var favBody = favCard.querySelector('.card-body');
+    if (!favBody) return;
+
+    var items = [];
+    var cards = Array.from(document.querySelectorAll('.card')).filter(function(card) {
+        return !card.classList.contains('favourites-card');
+    });
+
+    cards.forEach(function(card) {
+        var star = card.querySelector('.card-star');
+        if (!star || !star.classList.contains('active')) return;
+        var sourceNameEl = card.querySelector('.source-name');
+        var sourceName = sourceNameEl ? sourceNameEl.textContent.trim() : '';
+        card.querySelectorAll('.article-row').forEach(function(row) {
+            var link = row.querySelector('.reader-link');
+            if (!link) return;
+            var dateEl = row.querySelector('.article-date');
+            var dateText = dateEl ? dateEl.textContent.trim() : '';
+            items.push({
+                title: link.textContent || '',
+                url: link.dataset.url || '',
+                source: sourceName,
+                dateText: dateText,
+                sortValue: _parseCardDate(dateText)
+            });
+        });
+    });
+
+    if (!items.length) {
+        favBody.innerHTML = '<div class="error-msg">Star cards to add them to My Favourites.</div>';
+        return;
+    }
+
+    items.sort(function(a, b) {
+        return (b.sortValue || 0) - (a.sortValue || 0);
+    });
+
+    var html = '';
+    items.slice(0, 300).forEach(function(item) {
+        var safeTitle = _escapeHtml(item.title);
+        var safeUrl = _escapeHtml(item.url);
+        var safeSource = _escapeHtml(item.source);
+        var safeDate = _escapeHtml(item.dateText || '');
+        html += '<div class="article-row">' +
+            '<div class="article-title">' +
+            '<a href="#" class="reader-link" data-url="' + safeUrl + '" data-source="' + safeSource + '" data-title="' + safeTitle + '">' + safeTitle + '</a>' +
+            '<div class="article-source">' + safeSource + '</div>' +
+            '</div>' +
+            '<div class="article-date">' + safeDate + '</div>' +
+            '</div>';
+    });
+    favBody.innerHTML = html;
+}
+
+function _escapeHtml(text) {
+    return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 async function toggleFavourite(event, key) {
+    var btn = event && event.currentTarget ? event.currentTarget : null;
     if (event) {
         event.stopPropagation();
         event.preventDefault();
+    }
+    if (btn) {
+        btn.classList.toggle('active');
+        _refreshFavouritesCardFromDom();
     }
     var api = await _apiReady;
     try {
         if (!api || !api.toggle_favourite) {
             throw new Error('Python API bridge not available');
         }
-        await api.toggle_favourite(key);
+        var result = await api.toggle_favourite(key);
+        if (btn && result && typeof result.favourited === 'boolean') {
+            btn.classList.toggle('active', !!result.favourited);
+            _refreshFavouritesCardFromDom();
+        }
     } catch (e) {
+        if (btn) {
+            btn.classList.toggle('active');
+            _refreshFavouritesCardFromDom();
+        }
         alert('Failed to update favourites: ' + e);
     }
 }

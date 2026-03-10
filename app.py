@@ -45,6 +45,8 @@ BUILTIN_FETCHERS = {
     "pg": fetch_paul_graham,
 }
 
+_LAST_NON_FAV_SOURCES: list[dict] = []
+
 
 def _load_custom_sources() -> list[dict]:
     if not os.path.exists(CONFIG_FILE):
@@ -155,6 +157,57 @@ def _article_sort_key(article: Article) -> datetime:
     return datetime.min
 
 
+def _compose_sources_with_favourites(non_fav_sources: list[dict], favourites: set[str]) -> list[dict]:
+    """Build render list with My Favourites first from already-fetched sources."""
+    render_sources = []
+    for src in non_fav_sources:
+        cloned = dict(src)
+        cloned["favoritable"] = bool(src.get("favoritable", True))
+        cloned["favourited"] = src["key"] in favourites
+        render_sources.append(cloned)
+
+    existing_keys = {s["key"] for s in render_sources}
+    cleaned_favourites = favourites.intersection(existing_keys)
+
+    favourites_articles = []
+    for src in render_sources:
+        if src["key"] not in cleaned_favourites:
+            continue
+        for article in src.get("articles", []):
+            favourites_articles.append(Article(
+                title=article.title,
+                url=article.url,
+                date=article.date,
+                sort_date=article.sort_date,
+                paywalled=article.paywalled,
+                source_name=src["name"],
+            ))
+    favourites_articles.sort(key=_article_sort_key, reverse=True)
+
+    favourites_error = None
+    if not cleaned_favourites:
+        favourites_error = "Star cards to add them to My Favourites."
+    elif not favourites_articles:
+        favourites_error = "No recent posts available from favourite cards yet."
+
+    favourites_card = {
+        "key": "favourites",
+        "name": "My Favourites",
+        "color": "#f5b041",
+        "url": "",
+        "articles": favourites_articles[:300],
+        "error": favourites_error,
+        "badge": False,
+        "removable": False,
+        "favoritable": False,
+        "favourited": True,
+        "is_favourites": True,
+        "show_source_name": True,
+    }
+
+    return [favourites_card] + render_sources
+
+
 def _fetch_all() -> list[dict]:
     """Fetch all sources (built-in + custom) in parallel."""
     custom_sources = _load_custom_sources()
@@ -222,49 +275,14 @@ def _fetch_all() -> list[dict]:
             "favourited": src["key"] in favourites,
         })
 
+    global _LAST_NON_FAV_SOURCES
+    _LAST_NON_FAV_SOURCES = [dict(s) for s in render_sources]
+
     existing_keys = {s["key"] for s in render_sources}
     cleaned_favourites = favourites.intersection(existing_keys)
     if cleaned_favourites != favourites:
         _save_favourites(cleaned_favourites)
-    favourites = cleaned_favourites
-
-    favourites_articles = []
-    for src in render_sources:
-        if src["key"] not in favourites:
-            continue
-        for article in src.get("articles", []):
-            favourites_articles.append(Article(
-                title=article.title,
-                url=article.url,
-                date=article.date,
-                sort_date=article.sort_date,
-                paywalled=article.paywalled,
-                source_name=src["name"],
-            ))
-    favourites_articles.sort(key=_article_sort_key, reverse=True)
-
-    favourites_error = None
-    if not favourites:
-        favourites_error = "Star cards to add them to My Favourites."
-    elif not favourites_articles:
-        favourites_error = "No recent posts available from favourite cards yet."
-
-    favourites_card = {
-        "key": "favourites",
-        "name": "My Favourites",
-        "color": "#f5b041",
-        "url": "",
-        "articles": favourites_articles[:300],
-        "error": favourites_error,
-        "badge": False,
-        "removable": False,
-        "favoritable": False,
-        "favourited": True,
-        "is_favourites": True,
-        "show_source_name": True,
-    }
-
-    return [favourites_card] + render_sources
+    return _compose_sources_with_favourites(render_sources, cleaned_favourites)
 
 
 class FeedApi:
@@ -328,7 +346,7 @@ class FeedApi:
     def toggle_favourite(self, key):
         """Called from JS to toggle a source card as favourite."""
         if key == "favourites":
-            return {"ok": True}
+            return {"ok": True, "favourited": True}
 
         favourites = _load_favourites()
         if key in favourites:
@@ -336,8 +354,7 @@ class FeedApi:
         else:
             favourites.add(key)
         _save_favourites(favourites)
-        self._refresh()
-        return {"ok": True}
+        return {"ok": True, "favourited": key in favourites}
 
     def get_article(self, url, source_name=None, fallback_title=None):
         """Called from JS to fetch article content for the reader sidebar."""

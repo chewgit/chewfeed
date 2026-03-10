@@ -1,7 +1,7 @@
 ﻿from dataclasses import dataclass, field
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 import calendar
 from email.utils import parsedate_to_datetime
 import html
@@ -217,6 +217,9 @@ def _try_parse_rss(text: str) -> list[Article] | None:
 def _scrape_links(html: str, base_url: str) -> list[Article]:
     """Scrape article-like links from an HTML page."""
     soup = BeautifulSoup(html, "html.parser")
+    base_parsed = urlparse(base_url)
+    base_host = (base_parsed.netloc or "").lower()
+    base_path = base_parsed.path or "/"
 
     # Remove nav, footer, sidebar elements to reduce noise
     for tag in soup.find_all(["nav", "footer", "aside", "header"]):
@@ -234,6 +237,39 @@ def _scrape_links(html: str, base_url: str) -> list[Article]:
         if href.startswith(("#", "javascript:", "mailto:")):
             continue
         full_url = urljoin(base_url, href)
+        full_parsed = urlparse(full_url)
+        full_host = (full_parsed.netloc or "").lower()
+
+        title_l = title.lower()
+        if title_l in {
+            "finance", "visit website", "feed", "latest",
+            "sign in", "sign up", "bookmarks", "trending",
+            "get now", "home",
+        }:
+            continue
+        if "inboxchat.ai" in full_url.lower():
+            continue
+
+        # Site-specific hardening for newsletter directories.
+        if "newsletterhunt.com" in base_host and "/newsletters/" in base_path:
+            if "/emails/" not in full_parsed.path:
+                continue
+            if title_l.endswith("by matt levine"):
+                continue
+            if "view in browser" in title_l:
+                continue
+            # Ignore giant summary blobs; keep concise post titles.
+            if len(title) > 120:
+                continue
+
+        # Generic quality filters for article-ish links.
+        if any(full_parsed.path.lower().startswith(p) for p in ["/categories/", "/users/", "/newsletters/"]):
+            continue
+        if full_host == base_host and full_parsed.path in {"/", "/feed", "/latest", "/trending"}:
+            continue
+        if len(title) < 8:
+            continue
+
         if full_url in seen:
             continue
         seen.add(full_url)
@@ -241,6 +277,141 @@ def _scrape_links(html: str, base_url: str) -> list[Article]:
         if len(articles) >= 20:
             break
     return articles
+
+
+def _parse_relative_date_label(label: str) -> Optional[datetime]:
+    """Convert labels like 'about 3 hours ago' / '2 days ago' to a date."""
+    text = (label or "").strip().lower()
+    if not text:
+        return None
+
+    now = datetime.now()
+    m = re.search(r"(?:about\s+)?(\d+)\s+(hour|hours|day|days|week|weeks|month|months)\s+ago", text)
+    if not m:
+        return None
+
+    qty = int(m.group(1))
+    unit = m.group(2)
+    if unit.startswith("hour"):
+        return now
+    if unit.startswith("day"):
+        return now - timedelta(days=qty)
+    if unit.startswith("week"):
+        return now - timedelta(days=7 * qty)
+    if unit.startswith("month"):
+        return now - timedelta(days=30 * qty)
+    return None
+
+
+def _extract_newsletterhunt_srcdoc_date(srcdoc_html: str) -> Optional[str]:
+    """Extract date from Newsletter Hunt embedded tracker token p=MMDDYYYY."""
+    if not srcdoc_html:
+        return None
+    match = re.search(r"\bp=(\d{8})\b", srcdoc_html)
+    if not match:
+        return None
+    token = match.group(1)
+    try:
+        month = int(token[:2])
+        day = int(token[2:4])
+        year = int(token[4:8])
+        dt = datetime(year, month, day)
+        return dt.strftime("%b %d, %Y")
+    except Exception:
+        return None
+
+
+def _parse_newsletterhunt_listing(soup: BeautifulSoup, base_url: str) -> list[Article]:
+    """Extract newsletter entries from Newsletter Hunt listing pages."""
+    parsed = urlparse(base_url)
+    if "newsletterhunt.com" not in (parsed.netloc or "").lower() or "/newsletters/" not in (parsed.path or ""):
+        return []
+
+    page_title = (soup.title.get_text(" ", strip=True) if soup.title else "").lower()
+    page_title = page_title.split("|", 1)[0].strip()
+    significant_tokens = [
+        tok for tok in re.findall(r"[a-z0-9]+", page_title)
+        if tok not in {"by", "the", "and", "for", "with", "newsletterhunt"}
+    ]
+
+    articles: list[Article] = []
+    seen: set[str] = set()
+    cards = soup.select("li.bg-white article")
+    for card in cards:
+        candidate_links = []
+        for a_tag in card.find_all("a", href=True):
+            href = a_tag.get("href", "")
+            if "/emails/" not in href:
+                continue
+            title = a_tag.get_text(" ", strip=True)
+            if not title or len(title) < 8 or len(title) > 140:
+                continue
+            if "view in browser" in title.lower():
+                continue
+            candidate_links.append((title, urljoin(base_url, href)))
+
+        if not candidate_links:
+            continue
+
+        title_url = None
+        if significant_tokens:
+            for title, href in candidate_links:
+                lower = title.lower()
+                if any(tok in lower for tok in significant_tokens):
+                    title_url = (title, href)
+                    break
+        if not title_url and significant_tokens:
+            # Skip cards that do not match the target newsletter identity.
+            continue
+        if not title_url:
+            title_url = candidate_links[0]
+
+        title, full_url = title_url
+        lower_title = title.lower()
+        if lower_title in {"finance", "visit website", "visit site", "latest"}:
+            continue
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+
+        article = Article(title=title, url=full_url)
+        time_tag = card.find("time")
+        relative_label = time_tag.get_text(" ", strip=True) if time_tag else ""
+        relative_dt = _parse_relative_date_label(relative_label)
+        if relative_dt:
+            article.sort_date = relative_dt
+            article.date = relative_dt.strftime("%b %d, %Y")
+        articles.append(article)
+
+    return articles
+
+
+def _enrich_article_dates(articles: list[Article], max_items: int = 12):
+    """Best-effort date enrichment for scraped links lacking publish dates."""
+    targets = [a for a in articles if not a.date and a.url][:max_items]
+    if not targets:
+        return
+
+    def _fetch_date(article: Article) -> tuple[Article, Optional[str]]:
+        try:
+            resp = requests.get(article.url, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            date_str = _extract_article_date(soup)
+            return article, date_str
+        except Exception:
+            return article, None
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(_fetch_date, a) for a in targets]
+        for future in futures:
+            article, date_str = future.result()
+            if date_str:
+                article.date = date_str
+                try:
+                    article.sort_date = datetime.strptime(date_str, "%b %d, %Y")
+                except Exception:
+                    pass
 
 
 def _common_feed_urls(url: str) -> list[str]:
@@ -587,6 +758,33 @@ def fetch_article_content(url: str) -> tuple[dict, Optional[str]]:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
+        outer_soup = soup
+
+        parsed = urlparse(url)
+
+        # Newsletter Hunt email pages embed real newsletter HTML inside iframe[srcdoc].
+        if "newsletterhunt.com" in (parsed.netloc or "").lower() and "/emails/" in (parsed.path or ""):
+            iframe = soup.find("iframe", srcdoc=True)
+            srcdoc = iframe.get("srcdoc", "") if iframe else ""
+            if srcdoc:
+                decoded = html.unescape(srcdoc)
+                embedded_soup = BeautifulSoup(decoded, "html.parser")
+                if embedded_soup.get_text(" ", strip=True):
+                    soup = embedded_soup
+
+            # Try to follow explicit "View in browser" external links when present.
+            view_link = outer_soup.find("a", string=re.compile(r"view in browser", re.I))
+            if view_link and view_link.get("href"):
+                upstream = urljoin(url, view_link["href"])
+                upstream_parsed = urlparse(upstream)
+                if upstream_parsed.netloc and "newsletterhunt.com" not in upstream_parsed.netloc.lower():
+                    try:
+                        upstream_resp = requests.get(upstream, headers=HEADERS, timeout=15)
+                        upstream_resp.raise_for_status()
+                        soup = BeautifulSoup(upstream_resp.text, "html.parser")
+                        url = upstream
+                    except Exception:
+                        pass
 
         title = None
         h1 = soup.find("h1")
@@ -596,10 +794,26 @@ def fetch_article_content(url: str) -> tuple[dict, Optional[str]]:
             title = soup.title.get_text(" ", strip=True)
         if not title:
             title = "Untitled"
+        if title.lower() in {"money stuff", "untitled"}:
+            outer_h2 = outer_soup.find("h2")
+            if outer_h2:
+                outer_title = outer_h2.get_text(" ", strip=True)
+                if outer_title:
+                    title = outer_title
         if " | " in title:
             title = title.split(" | ", 1)[0].strip()
 
         article_date = _extract_article_date(soup)
+        if not article_date and "newsletterhunt.com" in (parsed.netloc or "").lower():
+            iframe = outer_soup.find("iframe", srcdoc=True)
+            srcdoc = iframe.get("srcdoc", "") if iframe else ""
+            article_date = _extract_newsletterhunt_srcdoc_date(html.unescape(srcdoc) if srcdoc else "")
+            if not article_date:
+                outer_time = outer_soup.find("time")
+                if outer_time:
+                    rel_dt = _parse_relative_date_label(outer_time.get_text(" ", strip=True))
+                    if rel_dt:
+                        article_date = rel_dt.strftime("%b %d, %Y")
         root = _pick_article_root(soup)
         # Clone selected content root so text/html extraction can clean independently.
         root_for_html = BeautifulSoup(str(root), "html.parser")
@@ -661,6 +875,10 @@ def fetch_generic(url: str) -> tuple[list[Article], Optional[str]]:
 
         # 2. Look for RSS feed link in the HTML
         soup = BeautifulSoup(text, "html.parser")
+        hunt_articles = _parse_newsletterhunt_listing(soup, url)
+        if hunt_articles:
+            hunt_articles.sort(key=lambda a: a.sort_date or datetime.min, reverse=True)
+            return hunt_articles, None
         feed_link = soup.find("link", attrs={"type": re.compile(r"(rss|atom)")})
         if feed_link and feed_link.get("href"):
             feed_url = urljoin(url, feed_link["href"])
@@ -682,6 +900,9 @@ def fetch_generic(url: str) -> tuple[list[Article], Optional[str]]:
         # 4. Fallback: scrape article links from HTML
         articles = _scrape_links(text, url)
         if articles:
+            # Scraped pages often miss explicit dates; enrich best-effort.
+            _enrich_article_dates(articles)
+            articles.sort(key=lambda a: a.sort_date or datetime.min, reverse=True)
             return articles, None
 
         return [], "No articles or feed found at this URL."
