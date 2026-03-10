@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import webview
 
 from fetchers import (
-    Article, fetch_paul_graham, fetch_acx, fetch_matt_levine, fetch_generic, fetch_article_content,
+    Article, fetch_paul_graham, fetch_generic, fetch_article_content,
 )
 from renderer import render_html, render_loading
 
@@ -29,17 +29,20 @@ CUSTOM_COLORS = [
 BUILTIN_SOURCES = [
     {"key": "pg", "name": "Paul Graham", "color": "#e67e22",
      "url": "https://paulgraham.com/articles.html", "fetcher": "pg"},
-    {"key": "acx", "name": "Astral Codex Ten", "color": "#8e44ad",
-     "url": "https://www.astralcodexten.com/", "fetcher": "acx"},
-    {"key": "ml", "name": "Matt Levine \u2014 Money Stuff", "color": "#2980b9",
-     "url": "https://www.bloomberg.com/opinion/authors/ARqpQk8bh9E/matthew-s-levine",
-     "fetcher": "ml", "badge": True},
+    {"key": "matt", "name": "Matt Levine \u2014 Money Stuff", "color": "#2980b9",
+     "url": "https://newsletterhunt.com/newsletters/money-stuff-by-matt-levine", "fetcher": "generic"},
+    {"key": "jvns", "name": "Julia Evans", "color": "#8e44ad",
+     "url": "https://jvns.ca/", "fetcher": "generic"},
+    {"key": "pragmatic", "name": "Pragmatic Engineer", "color": "#16a085",
+     "url": "https://blog.pragmaticengineer.com/", "fetcher": "generic"},
+    {"key": "bits", "name": "Bits About Money", "color": "#c0392b",
+     "url": "https://www.bitsaboutmoney.com/archive/", "fetcher": "generic"},
+    {"key": "ftav", "name": "FT Alphaville", "color": "#2c7fb8",
+     "url": "https://ftav.substack.com/", "fetcher": "generic"},
 ]
 
 BUILTIN_FETCHERS = {
     "pg": fetch_paul_graham,
-    "acx": fetch_acx,
-    "ml": fetch_matt_levine,
 }
 
 
@@ -161,8 +164,12 @@ def _fetch_all() -> list[dict]:
     results = {}
 
     def _fetch_builtin(src):
-        fetcher = BUILTIN_FETCHERS[src["fetcher"]]
-        articles, error = fetcher()
+        fetcher_name = src["fetcher"]
+        if fetcher_name == "generic":
+            articles, error = fetch_generic(src["url"])
+        else:
+            fetcher = BUILTIN_FETCHERS[fetcher_name]
+            articles, error = fetcher()
         return src["key"], articles, error
 
     def _fetch_custom(src):
