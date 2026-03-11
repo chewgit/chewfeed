@@ -6,4 +6,5 @@ Instructions to use:
 2. Unzip it, wherever you've saved it to.
 3. Run build.bat, it will create /dist/chewfeed.exe
 4. Chewfeed/dist/chewfeed.exe is what you want to run
-5. Should open nicely! If not message me on telegram
+5. Should run nicely! If not message me on telegram
+6. Core functionalities should be straightforward, you can Star your favourite feeds, the top navigation bar allows you to follow new feeds, and clicking a post in your feed opens a plaintext reader in the sidebar. 
