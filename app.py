@@ -378,6 +378,11 @@ class FeedApi:
         webbrowser.open_new_tab(normalized_url)
         return {"ok": True}
 
+    def refresh_all(self):
+        """Called from JS to refresh all feeds."""
+        self._refresh()
+        return {"ok": True}
+
     def _refresh(self):
         sources = _fetch_all()
         html = render_html(sources)
@@ -388,10 +393,8 @@ api = FeedApi()
 
 
 def load_content(window):
-    """Runs on background thread — fetches everything then renders."""
-    sources = _fetch_all()
-    html = render_html(sources)
-    window.load_html(html)
+    """Runs on background thread and auto-refreshes all feeds on app open."""
+    api._refresh()
 
 
 def main():

@@ -42,6 +42,33 @@ body {
     align-items: center;
     gap: 12px;
 }
+.header-refresh {
+    width: 30px;
+    height: 30px;
+    border: 1px solid #4a4a4a;
+    border-radius: 8px;
+    background: #252525;
+    color: #d0d0d0;
+    font-size: 17px;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.18s, border-color 0.18s, color 0.18s;
+}
+.header-refresh:hover {
+    background: #303030;
+    border-color: #6a6a6a;
+    color: #ffffff;
+}
+.header-refresh:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+.header-refresh.refreshing {
+    animation: spin 0.75s linear infinite;
+}
 .app-logo {
     width: 42px;
     height: 42px;
@@ -499,6 +526,30 @@ async function addSource() {
 }
 
 /* â”€â”€ Remove source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+async function refreshFeeds(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    var btn = document.getElementById('refresh-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.classList.add('refreshing');
+    }
+    var api = await _apiReady;
+    try {
+        if (!api || !api.refresh_all) {
+            throw new Error('Python API bridge not available');
+        }
+        await api.refresh_all();
+    } catch (e) {
+        if (btn) {
+            btn.disabled = false;
+            btn.classList.remove('refreshing');
+        }
+        alert('Failed to refresh feeds: ' + e);
+    }
+}
 async function removeSource(key) {
     var api = await _apiReady;
     closeAllMenus();
@@ -791,6 +842,7 @@ def _render_brand(date_text: str, time_text: str = "") -> str:
         '<h1>ChewFeed</h1>'
         f'<div class="subtitle">{subtitle}</div>'
         '</div>'
+        '<button id="refresh-btn" class="header-refresh" onclick="refreshFeeds(event)" title="Refresh all feeds" aria-label="Refresh all feeds">&#8635;</button>'
         '</div>'
     )
 
@@ -955,6 +1007,7 @@ def render_html(sources: list[dict]) -> str:
 </div>
 <script>{JS}</script>
 </body></html>"""
+
 
 
 
