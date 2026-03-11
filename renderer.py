@@ -43,31 +43,32 @@ body {
     gap: 12px;
 }
 .header-refresh {
-    width: 30px;
-    height: 30px;
-    border: 1px solid #4a4a4a;
-    border-radius: 8px;
-    background: #252525;
-    color: #d0d0d0;
-    font-size: 17px;
-    line-height: 1;
+    border: none;
+    background: transparent;
+    color: #bfc4cb;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    transition: background 0.18s, border-color 0.18s, color 0.18s;
+    margin-left: 10px;
+    padding: 0;
+    transition: color 0.18s;
 }
 .header-refresh:hover {
-    background: #303030;
-    border-color: #6a6a6a;
     color: #ffffff;
 }
 .header-refresh:disabled {
     opacity: 0.7;
     cursor: not-allowed;
 }
-.header-refresh.refreshing {
-    animation: spin 0.75s linear infinite;
+.header-refresh-icon {
+    display: inline-block;
+    transform-origin: center center;
+    width: 16px;
+    height: 16px;
+}
+.header-refresh.refreshing .header-refresh-icon {
+    animation: spin 1.8s linear infinite;
 }
 .app-logo {
     width: 42px;
@@ -77,15 +78,20 @@ body {
     background: #fff;
     padding: 4px;
 }
+.brand-title-row {
+    display: flex;
+    align-items: center;
+}
 .brand-text h1 {
     font-size: 22px;
     font-weight: 600;
-    margin-bottom: 4px;
+    margin: 0;
 }
 .brand-text .subtitle {
     font-size: 13px;
     color: #999;
     font-weight: 400;
+    margin-top: 4px;
 }
 .brand-text .subtitle .subtitle-date {
     display: inline;
@@ -839,10 +845,17 @@ def _render_brand(date_text: str, time_text: str = "") -> str:
         '<div class="header-left">'
         f'{logo_html}'
         '<div class="brand-text">'
+        '<div class="brand-title-row">'
         '<h1>ChewFeed</h1>'
+        '<button id="refresh-btn" class="header-refresh" onclick="refreshFeeds(event)" title="Refresh all feeds" aria-label="Refresh all feeds">'
+        '<svg class="header-refresh-icon" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+        '<path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41m-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9"/>'
+        '<path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5 5 0 0 0 8 3M3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9z"/>'
+        '</svg>'
+        '</button>'
+        '</div>'
         f'<div class="subtitle">{subtitle}</div>'
         '</div>'
-        '<button id="refresh-btn" class="header-refresh" onclick="refreshFeeds(event)" title="Refresh all feeds" aria-label="Refresh all feeds">&#8635;</button>'
         '</div>'
     )
 

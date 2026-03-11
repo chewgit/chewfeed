@@ -44,6 +44,25 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+NAV_LINK_TITLES = {
+    "finance", "visit website", "visit site", "feed", "latest",
+    "sign in", "sign up", "bookmarks", "trending", "get now",
+    "home", "privacy", "terms", "about", "contact", "login",
+    "log in", "register", "subscribe",
+}
+
+ARTICLEISH_PATH_HINTS = (
+    "/article", "/articles/", "/post", "/posts/", "/blog/", "/archive/",
+    "/archives/", "/entry/", "/entries/", "/p/", "/notes/", "/stories/",
+    "/emails/",
+)
+
+NON_ARTICLE_PATH_HINTS = (
+    "/categories/", "/category/", "/users/", "/user/", "/authors/",
+    "/author/", "/tags/", "/tag/", "/topics/", "/topic/", "/newsletter/",
+    "/newsletters/", "/feed", "/latest", "/trending",
+)
+
 
 def _format_feed_date(parsed_time) -> str:
     """Format feed timestamps using local date only."""
@@ -219,64 +238,164 @@ def _scrape_links(html: str, base_url: str) -> list[Article]:
     soup = BeautifulSoup(html, "html.parser")
     base_parsed = urlparse(base_url)
     base_host = (base_parsed.netloc or "").lower()
-    base_path = base_parsed.path or "/"
 
     # Remove nav, footer, sidebar elements to reduce noise
     for tag in soup.find_all(["nav", "footer", "aside", "header"]):
         tag.decompose()
 
-    articles = []
-    seen = set()
+    candidates = []
+    best_by_url: dict[str, tuple[int, Article]] = {}
     for a_tag in soup.find_all("a", href=True):
-        href = a_tag["href"]
-        title = a_tag.get_text(strip=True)
-        # Skip empty, short, or navigation-like links
-        if not title or len(title) < 5 or len(title) > 200:
+        candidate = _score_link_candidate(a_tag, base_url, base_host)
+        if candidate is None:
             continue
-        # Skip anchors, javascript, mailto
-        if href.startswith(("#", "javascript:", "mailto:")):
-            continue
-        full_url = urljoin(base_url, href)
-        full_parsed = urlparse(full_url)
-        full_host = (full_parsed.netloc or "").lower()
+        score, article = candidate
+        existing = best_by_url.get(article.url)
+        if existing is None or score > existing[0]:
+            best_by_url[article.url] = (score, article)
 
-        title_l = title.lower()
-        if title_l in {
-            "finance", "visit website", "feed", "latest",
-            "sign in", "sign up", "bookmarks", "trending",
-            "get now", "home",
-        }:
-            continue
-        if "inboxchat.ai" in full_url.lower():
-            continue
+    candidates = sorted(best_by_url.values(), key=lambda item: item[0], reverse=True)
+    return [article for score, article in candidates if score >= 24][:20]
 
-        # Site-specific hardening for newsletter directories.
-        if "newsletterhunt.com" in base_host and "/newsletters/" in base_path:
-            if "/emails/" not in full_parsed.path:
-                continue
-            if title_l.endswith("by matt levine"):
-                continue
-            if "view in browser" in title_l:
-                continue
-            # Ignore giant summary blobs; keep concise post titles.
-            if len(title) > 120:
-                continue
 
-        # Generic quality filters for article-ish links.
-        if any(full_parsed.path.lower().startswith(p) for p in ["/categories/", "/users/", "/newsletters/"]):
-            continue
-        if full_host == base_host and full_parsed.path in {"/", "/feed", "/latest", "/trending"}:
-            continue
-        if len(title) < 8:
-            continue
+def _is_repeated_container(tag: Tag) -> bool:
+    parent = tag.parent
+    if parent is None or not isinstance(parent, Tag):
+        return False
 
-        if full_url in seen:
+    siblings = [sib for sib in parent.find_all(tag.name, recursive=False) if isinstance(sib, Tag)]
+    if len(siblings) < 3:
+        return False
+
+    tag_classes = set(tag.get("class", []))
+    similar = 0
+    for sibling in siblings:
+        sibling_classes = set(sibling.get("class", []))
+        if not tag_classes or tag_classes == sibling_classes:
+            similar += 1
+    return similar >= 3
+
+
+def _extract_listing_date_from_context(node: Tag) -> Optional[str]:
+    for ancestor in [node, *list(node.parents)[:4]]:
+        if not isinstance(ancestor, Tag):
             continue
-        seen.add(full_url)
-        articles.append(Article(title=title, url=full_url))
-        if len(articles) >= 20:
+        time_tag = ancestor.find("time")
+        if time_tag:
+            visible = (time_tag.get_text(" ", strip=True) or "").strip()
+            if visible:
+                relative = _parse_relative_date_label(visible)
+                if relative:
+                    return relative.strftime("%b %d, %Y")
+                normalized = _normalize_date(visible)
+                if normalized:
+                    return normalized
+            raw = (time_tag.get("datetime") or "").strip()
+            if raw:
+                normalized = _normalize_date(raw)
+                if normalized:
+                    return normalized
+    return None
+
+
+def _score_title_text(title: str) -> int:
+    text = (title or "").strip()
+    if not text:
+        return -100
+
+    words = re.findall(r"[A-Za-z0-9]+", text)
+    word_count = len(words)
+    score = 0
+
+    if 12 <= len(text) <= 110:
+        score += 18
+    elif 8 <= len(text) <= 140:
+        score += 10
+    else:
+        score -= 14
+
+    if 3 <= word_count <= 18:
+        score += 10
+    elif 2 <= word_count <= 24:
+        score += 4
+    else:
+        score -= 8
+
+    lowered = text.lower()
+    if lowered in NAV_LINK_TITLES:
+        score -= 80
+    if "view in browser" in lowered:
+        score -= 60
+    if "sign up here" in lowered:
+        score -= 30
+    if "\n" in text or "\r" in text:
+        score -= 8
+
+    return score
+
+
+def _score_link_candidate(a_tag: Tag, base_url: str, base_host: str) -> Optional[tuple[int, Article]]:
+    href = a_tag.get("href", "")
+    if href.startswith(("#", "javascript:", "mailto:")):
+        return None
+
+    title = a_tag.get_text(" ", strip=True)
+    if not title:
+        return None
+
+    full_url = urljoin(base_url, href)
+    full_parsed = urlparse(full_url)
+    full_host = (full_parsed.netloc or "").lower()
+    path_l = (full_parsed.path or "").lower()
+    title_l = title.lower()
+
+    if "inboxchat.ai" in full_url.lower():
+        return None
+    if path_l in {"", "/"}:
+        return None
+    if any(path_l.startswith(prefix) for prefix in NON_ARTICLE_PATH_HINTS):
+        return None
+    if full_host == base_host and path_l in {"/", "/feed", "/latest", "/trending"}:
+        return None
+
+    score = _score_title_text(title)
+    if score <= -40:
+        return None
+
+    if full_host == base_host:
+        score += 8
+    elif full_host.endswith("." + base_host) or base_host.endswith("." + full_host):
+        score += 4
+    else:
+        score -= 6
+
+    if any(hint in path_l for hint in ARTICLEISH_PATH_HINTS):
+        score += 14
+    if re.search(r"/20\d{2}/", path_l):
+        score += 10
+    if re.search(r"/\d{4}/\d{1,2}/", path_l):
+        score += 8
+
+    if a_tag.find_parent(["h1", "h2", "h3", "h4"]):
+        score += 16
+
+    for ancestor in list(a_tag.parents)[:4]:
+        if not isinstance(ancestor, Tag):
+            continue
+        if ancestor.name in {"article", "li", "section", "div"} and _is_repeated_container(ancestor):
+            score += 14
             break
-    return articles
+
+    date_str = _extract_listing_date_from_context(a_tag)
+    article = Article(title=title, url=full_url, date=date_str)
+    if date_str:
+        try:
+            article.sort_date = datetime.strptime(date_str, "%b %d, %Y")
+        except Exception:
+            pass
+        score += 8
+
+    return score, article
 
 
 def _parse_relative_date_label(label: str) -> Optional[datetime]:
@@ -327,60 +446,50 @@ def _parse_newsletterhunt_listing(soup: BeautifulSoup, base_url: str) -> list[Ar
     if "newsletterhunt.com" not in (parsed.netloc or "").lower() or "/newsletters/" not in (parsed.path or ""):
         return []
 
-    page_title = (soup.title.get_text(" ", strip=True) if soup.title else "").lower()
-    page_title = page_title.split("|", 1)[0].strip()
-    significant_tokens = [
-        tok for tok in re.findall(r"[a-z0-9]+", page_title)
-        if tok not in {"by", "the", "and", "for", "with", "newsletterhunt"}
-    ]
-
     articles: list[Article] = []
     seen: set[str] = set()
+    base_path = (parsed.path or "").rstrip("/")
     cards = soup.select("li.bg-white article")
     for card in cards:
-        candidate_links = []
+        newsletter_links = [
+            urljoin(base_url, a_tag["href"])
+            for a_tag in card.find_all("a", href=True)
+            if "/newsletters/" in (a_tag.get("href", ""))
+        ]
+        if not newsletter_links:
+            continue
+        if not any((urlparse(link).path or "").rstrip("/") == base_path for link in newsletter_links):
+            continue
+
+        best_candidate = None
         for a_tag in card.find_all("a", href=True):
             href = a_tag.get("href", "")
             if "/emails/" not in href:
                 continue
-            title = a_tag.get_text(" ", strip=True)
-            if not title or len(title) < 8 or len(title) > 140:
+            candidate = _score_link_candidate(a_tag, base_url, "newsletterhunt.com")
+            if candidate is None:
                 continue
-            if "view in browser" in title.lower():
+            score, article = candidate
+            if score < 18:
                 continue
-            candidate_links.append((title, urljoin(base_url, href)))
+            if best_candidate is None or score > best_candidate[0]:
+                best_candidate = (score, article)
 
-        if not candidate_links:
+        if best_candidate is None:
             continue
 
-        title_url = None
-        if significant_tokens:
-            for title, href in candidate_links:
-                lower = title.lower()
-                if any(tok in lower for tok in significant_tokens):
-                    title_url = (title, href)
-                    break
-        if not title_url and significant_tokens:
-            # Skip cards that do not match the target newsletter identity.
+        article = best_candidate[1]
+        if article.url in seen:
             continue
-        if not title_url:
-            title_url = candidate_links[0]
+        seen.add(article.url)
 
-        title, full_url = title_url
-        lower_title = title.lower()
-        if lower_title in {"finance", "visit website", "visit site", "latest"}:
-            continue
-        if full_url in seen:
-            continue
-        seen.add(full_url)
-
-        article = Article(title=title, url=full_url)
-        time_tag = card.find("time")
-        relative_label = time_tag.get_text(" ", strip=True) if time_tag else ""
-        relative_dt = _parse_relative_date_label(relative_label)
-        if relative_dt:
-            article.sort_date = relative_dt
-            article.date = relative_dt.strftime("%b %d, %Y")
+        if not article.date:
+            time_tag = card.find("time")
+            relative_label = time_tag.get_text(" ", strip=True) if time_tag else ""
+            relative_dt = _parse_relative_date_label(relative_label)
+            if relative_dt:
+                article.sort_date = relative_dt
+                article.date = relative_dt.strftime("%b %d, %Y")
         articles.append(article)
 
     return articles
